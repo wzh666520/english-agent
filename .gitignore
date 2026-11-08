@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+*.bak_*
+*.bak_copy_*
+*.bak_fix_*

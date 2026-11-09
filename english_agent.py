@@ -18,12 +18,15 @@ def get_ffmpeg_path():
 FFMPEG_PATH = get_ffmpeg_path()
 
 import streamlit as st
+import streamlit.components.v1 as components
 from openai import OpenAI
 import subprocess
 import tempfile
 import base64
 import io
 import json
+import re
+import html as _html
 import random
 from datetime import datetime, date, timedelta
 
@@ -192,36 +195,53 @@ if not st.session_state.logged_in:
     st.stop()
 
 # ========== 浏览器TTS语音朗读 ==========
-st.markdown("""
+# 注：st.markdown 里的 <script> 会被前端过滤掉，JS 不会执行，此前按钮点了没有声音就是这个原因。
+# 现改为 components.html 渲染一个自带按钮的小 iframe：点击发生在 iframe 内部，
+# 满足浏览器"语音播报需要用户手势"的限制，也绕开了 markdown 的脚本过滤。
+_TTS_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><style>
+html,body{margin:0;padding:0;background:transparent;overflow:hidden;}
+button{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;
+font-size:13px;line-height:1.4;padding:5px 14px;border-radius:6px;
+border:1px solid rgba(49,51,63,0.25);background:transparent;color:inherit;cursor:pointer;}
+button:hover{border-color:#ff4b4b;color:#ff4b4b;}
+</style></head><body>
+<button id="tts">__LABEL__</button>
 <script>
-if (!window._tts_injected) {
-    window._tts_injected = true;
-    window.speakText = function(text, lang, rate) {
-        if (!text || !text.trim()) return;
-        window.speechSynthesis.cancel();
-        const utter = new SpeechSynthesisUtterance(text);
-        utter.lang = lang || 'en-US';
-        utter.rate = rate || 0.9;
-        window.speechSynthesis.speak(utter);
-    };
-    window.stopSpeak = function() {
-        window.speechSynthesis.cancel();
-    };
+var cfg = __CFG__;
+var btn = document.getElementById('tts');
+function pickVoice(){
+  var voices = window.speechSynthesis.getVoices() || [];
+  var want = (cfg.lang || 'en-US').toLowerCase();
+  var prefix = want.slice(0,2);
+  var target = want.replace('_','-');
+  var hits = voices.filter(function(v){ return (v.lang||'').toLowerCase().replace('_','-').indexOf(prefix) === 0; });
+  for (var i = 0; i < hits.length; i++) {
+    if ((hits[i].lang||'').toLowerCase().replace('_','-') === target) { return hits[i]; }
+  }
+  return hits[0] || null;
 }
-</script>
-""", unsafe_allow_html=True)
+btn.addEventListener('click', function(){
+  if (!('speechSynthesis' in window)) { btn.textContent = '当前浏览器不支持朗读，请换 Chrome 或 Edge'; return; }
+  window.speechSynthesis.cancel();
+  var u = new SpeechSynthesisUtterance(cfg.text);
+  u.lang = cfg.lang || 'en-US';
+  u.rate = cfg.rate || 0.9;
+  var v = pickVoice();
+  if (v) { u.voice = v; }
+  window.speechSynthesis.speak(u);
+});
+</script></body></html>"""
 
 def speak_button(label, text, lang="en-US", key=None):
+    """渲染一个可点击的朗读按钮（组件内按钮，点击后由浏览器本地 TTS 播报）"""
     if not text or not str(text).strip():
         return
     rate = st.session_state.get("tts_rate", 0.9)
-    text_js = json.dumps(str(text), ensure_ascii=False)
-    lang_js = json.dumps(lang)
-    if st.button(label, key=key):
-        st.markdown(
-            f"<script>window.speakText({text_js}, {lang_js}, {rate});</script>",
-            unsafe_allow_html=True,
-        )
+    clean_label = re.sub(r":material/[a-zA-Z0-9_]+:", "", str(label)).strip() or "朗读"
+    cfg = json.dumps({"text": str(text), "lang": lang, "rate": float(rate)}, ensure_ascii=False)
+    page = _TTS_HTML.replace("__LABEL__", _html.escape(clean_label)).replace("__CFG__", cfg)
+    components.html(page, height=38, scrolling=False)
 
 # ========== 侧边栏 ==========
 with st.sidebar:
@@ -264,7 +284,7 @@ with st.sidebar:
     level = st.selectbox("我的英语水平", ["小学", "初中", "高中", "大学四级", "大学六级"])
     role_style = st.selectbox("AI老师风格", ["专业严肃老师", "趣味口语外教", "温柔鼓励型"])
     tts_rate = st.slider(":material/volume_up: 朗读语速", min_value=0.5, max_value=1.5, value=0.9, step=0.1,
-                         help="0.5 慢速（适合精听），1.0 正常，1.5 快速")
+                         key="tts_rate", help="0.5 慢速（适合精听），1.0 正常，1.5 快速")
     
     st.divider()
     
